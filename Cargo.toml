@@ -1,0 +1,36 @@
+[package]
+name = "folder2iso"
+version = "0.1.0"
+edition = "2021"
+description = "フォルダから ISO9660 + Joliet の ISO イメージを作る"
+license = "MIT OR Apache-2.0"
+authors = ["xex (xex-ken-xex)"]
+repository = "https://github.com/xex-ken-xex/folder2iso"
+
+[features]
+default = ["gui"]
+gui = ["dep:eframe", "dep:vw-ui", "dep:vw-tree", "dep:vw-launch", "dep:vw-renderer"]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+# 見た目とフォルダを選ぶ窓は vw と同じものを使う。版をそろえるため rev で固定する
+vw-ui = { git = "https://github.com/xex-ken-xex/vw", rev = "7e02bf8d12a08e28593518521a6e830e5855e96e", optional = true }
+vw-tree = { git = "https://github.com/xex-ken-xex/vw", rev = "7e02bf8d12a08e28593518521a6e830e5855e96e", optional = true }
+vw-launch = { git = "https://github.com/xex-ken-xex/vw", rev = "7e02bf8d12a08e28593518521a6e830e5855e96e", optional = true }
+vw-renderer = { git = "https://github.com/xex-ken-xex/vw", rev = "7e02bf8d12a08e28593518521a6e830e5855e96e", optional = true }
+eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"], optional = true }
+
+# Windows で、コマンドラインから使うときに起動元のコンソールへ出力をつなぐ(main.rs の attach_console)
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# vw と同じく、Windows で拡大率の違うモニタ間をドラッグしたときのちらつきを直した winit を使う
+# (vw の vendor/winit/README-vw.md)。上流が直したら外す。
+[patch.crates-io]
+winit = { git = "https://github.com/xex-ken-xex/vw", rev = "7e02bf8d12a08e28593518521a6e830e5855e96e" }
