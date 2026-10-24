@@ -4,6 +4,15 @@
 Windows と Linux で動き、画面（GUI）とコマンドライン（CLI）のどちらでも使えます。
 画面の見た目とフォルダを選ぶ窓は、[vw](https://github.com/xex-ken-xex/vw) と同じ部品（`vw-ui`・`vw-tree`）を使っています。
 
+ISO の作り方は OS で変わります。
+
+| OS | 作り方 | 形式 | 4GiB 以上のファイル |
+| --- | --- | --- | --- |
+| **Windows** | 同じフォルダの [`folder2DVD_ISO.ps1`](tools/README.md) を呼び、Windows 標準の **IMAPI2** に作らせる | ISO9660 + Joliet + UDF | **入れられる**（自動で UDF だけにする） |
+| Linux | folder2iso 自身が書き出す | ISO9660 + Joliet | 入れられない |
+
+> **Windows では `folder2iso.exe` と `folder2DVD_ISO.ps1` を必ず同じフォルダに置いてください。** ps1 がないと ISO を作れません（画面にもそう出ます）。
+
 ![folder2iso の画面](docs/screenshot.png)
 
 ---
@@ -30,6 +39,7 @@ Windows と Linux で動き、画面（GUI）とコマンドライン（CLI）�
 | | 内容 |
 | --- | --- |
 | 📁 → 💿 | 指定したフォルダの中身（サブフォルダも含めて全部）を 1 つの `.iso` ファイルにまとめる |
+| 📀 | 焼く予定のメディア（CD / DVD / 2 層 DVD / BD / 2 層 BD）を選ぶと、入りきらないときは作る前に止める。既定は「上限なし」 |
 | 🇯🇵 | **日本語のファイル名・フォルダ名をそのまま入れられる**（Joliet 形式。1 つの名前は 64 文字まで） |
 | 🪟 | Windows のエクスプローラで **ダブルクリックするだけで開ける（マウントできる）** ISO を作る。Linux・macOS でも読める |
 | 🏷️ | ボリュームラベル（ドライブ名の横に出る名前）を付けられる。空ならフォルダ名 |
@@ -41,10 +51,9 @@ Windows と Linux で動き、画面（GUI）とコマンドライン（CLI）�
 
 ## できないこと（制限）
 
-- **4GiB 以上のファイルは入れられません。** ISO9660 / Joliet の 1 ファイルの上限が 4GiB − 1 バイトのためです。
+- **Linux では 4GiB 以上のファイルは入れられません。** ISO9660 / Joliet の 1 ファイルの上限が 4GiB − 1 バイトのためです。
   入れようとすると、どのファイルが大きすぎるかを示して止まります（作り始める前に、画面でも警告します）。
-  これを入れるには UDF 形式が要り、今のところ対応していません（[技術メモ](#技術メモ)）。
-  Windows なら、UDF も作れる PowerShell 版 [tools/folder2DVD_ISO.ps1](tools/README.md) を使ってください。
+  Windows では IMAPI2 が UDF で作るので入れられます。
 - **起動できる（ブータブル）ISO は作れません**（El Torito 非対応）。データを入れるための ISO です。
 - **シンボリックリンク・ジャンクションは入れません**（飛ばしてログに出します）。リンク先をたどるとループして終わらないことがあるためです。
 - Joliet の名前は 1 つ 64 文字までです。長い名前は、拡張子を残して末尾を切ります（ログに「名前を変えて入れた」と出ます）。
@@ -61,8 +70,12 @@ Windows と Linux で動き、画面（GUI）とコマンドライン（CLI）�
 | 日本語表示 | Windows は標準で入っている游ゴシック・メイリオ・MS ゴシックのどれかを自動で使います。Linux は Noto Sans CJK・IPAex ゴシックなどの日本語フォントが要ります（例: `sudo apt install fonts-noto-cjk`） |
 | 空き容量 | 出力先のドライブに、元のフォルダと同じくらいの空き |
 | 管理者権限 | **不要** |
+| Windows で要るもの | `folder2DVD_ISO.ps1` を exe と同じフォルダに置くこと。Windows PowerShell 5.1 と IMAPI2 は Windows に標準で入っています |
 
 コマンドライン（CLI）だけを使うなら、描画と日本語フォントの条件は要りません。
+
+Windows では、exe が `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File folder2DVD_ISO.ps1 ...` を窓を出さずに起動します。
+`-ExecutionPolicy Bypass` はこの 1 回の実行だけに効き、PC の実行ポリシーの設定は変えません。
 
 ### 自分でビルドするなら
 
@@ -78,8 +91,8 @@ Windows と Linux で動き、画面（GUI）とコマンドライン（CLI）�
 ### A. ビルド済みの実行ファイルを使う
 
 GitHub の [Actions](https://github.com/xex-ken-xex/folder2iso/actions) の最新の成功した実行を開き、
-下の **Artifacts** から `folder2iso-windows-x64` を落として展開すると `folder2iso.exe` が入っています。
-インストールは要りません。好きな場所に置いて使ってください。
+下の **Artifacts** から `folder2iso-windows-x64` を落として展開すると、`folder2iso.exe` と `folder2DVD_ISO.ps1` が入っています。
+インストールは要りません。**2 つを同じフォルダのまま**、好きな場所に置いて使ってください。
 
 ### B. ソースからビルドする
 
@@ -88,7 +101,11 @@ git clone https://github.com/xex-ken-xex/folder2iso.git
 cd folder2iso
 cargo build --release
 # できあがり: target\release\folder2iso.exe（Linux は target/release/folder2iso）
+# Windows では tools\folder2DVD_ISO.ps1 を exe の隣に写す
+copy tools\folder2DVD_ISO.ps1 target\release\
 ```
+
+`cargo run` で動かすときは、exe の隣に ps1 がなくてもリポジトリの `tools\folder2DVD_ISO.ps1` を見つけて使います。
 
 画面を使わない CLI だけの版を作るなら（依存が少なく、ビルドが速い）:
 
@@ -138,6 +155,7 @@ folder2iso [オプション] <元のフォルダ> [出力するISOファイル]
 | `-V`, `--label <名前>` | ボリュームラベル。省略するとフォルダ名 |
 | `-f`, `--force` | 出力ファイルが既にあれば上書きする（付けないと、既にあればエラーで止まる） |
 | `--exclude-hidden` | 隠しファイル・フォルダを入れない |
+| `--media <種類>` | 焼く予定のメディア。`cd` / `dvd` / `dvd-dl` / `bd` / `bd-dl` / `unlimited`（既定）。入りきらなければ作る前に止める |
 | `--gui` | 画面を開く。元のフォルダを付けると、それを入れた状態で開く |
 | `-h`, `--help` | 使い方を出す |
 | `--version` | 版を出す |
@@ -196,7 +214,10 @@ ISO の中には、同じファイルを 2 通りの名前で記録していま�
 | 症状 | 対処 |
 | --- | --- |
 | 「Windows によって PC が保護されました」と出る | 署名のない実行ファイルのため SmartScreen が止めています。**詳細情報 → 実行** で起動できます |
-| 「4GiB 以上のファイル…」と出て作れない | そのファイルは ISO9660/Joliet に入りません。分割するか、除いてから作ってください |
+| 「4GiB 以上のファイル…」と出て作れない（Linux） | そのファイルは ISO9660/Joliet に入りません。分割するか、除くか、Windows で作ってください |
+| 「folder2DVD_ISO.ps1 が見つかりません」（Windows） | exe と同じフォルダに `folder2DVD_ISO.ps1` を置いてください |
+| 「PowerShell が失敗しました」（Windows） | 続く行に PowerShell の出力が出ます。ps1 を単独で実行すると詳しく分かります（[tools/README.md](tools/README.md)） |
+| 「… に入りきりません」 | メディアを大きいものか「上限なし」にしてください |
 | 「出力ファイルが既にあります」 | 画面なら「既にあれば上書きする」に印を、CLI なら `--force` を付けます |
 | 「出力先を元のフォルダの中にはできません」 | 作った ISO を自分の中に取り込んでしまうためです。元のフォルダの外を指定してください |
 | 日本語が □ になる（Linux） | 日本語フォントを入れてください（`sudo apt install fonts-noto-cjk` など） |
@@ -216,7 +237,9 @@ cargo fmt --check
 
 | ファイル | 中身 |
 | --- | --- |
-| `src/iso.rs` | ISO9660 + Joliet の書き出し（フォルダを歩く、名前を付ける、配置を決める、書く）とテスト |
+| `src/iso.rs` | ISO9660 + Joliet の書き出し（フォルダを歩く、名前を付ける、配置を決める、書く）とテスト。Linux で使う |
+| `src/imapi.rs` | Windows で `folder2DVD_ISO.ps1 -Machine` を呼び、1 行ずつの出力（`@@PROGRESS` など）を読んで進み具合に変える |
+| `tools/folder2DVD_ISO.ps1` | IMAPI2 で ISO を作る PowerShell。単独でも使える |
 | `src/main.rs` | コマンドライン。引数なしなら画面を開く |
 | `src/gui.rs` | 画面（vw と同じ `vw-ui` の見た目、`vw-tree` の選ぶ窓） |
 | `src/fonts.rs` | 日本語フォントの読み込み（vw の DicoAmplio から写した） |
@@ -241,10 +264,12 @@ xorriso -indev out.iso -find / -type f     # libisofs で読めるか
 
 | 方式 | 内容 | 採否 |
 | --- | --- | --- |
-| 自前で ISO9660 + Joliet を書く | 依存なし、Windows / Linux 共通、ファイルの中身を流しながら書くのでメモリを食わない | **採用** |
+| 自前で ISO9660 + Joliet を書く | 依存なし、Windows / Linux 共通、ファイルの中身を流しながら書くのでメモリを食わない | **Linux で採用** |
 | `hadris-iso` などのクレート | 書き出しにも対応しているが、API が版ごとに変わっている途中（3.0 が rc） | 見送り |
-| Windows の IMAPI2（`IFileSystemImage`、`windows` クレートの COM 経由） | Windows 標準の API で UDF も作れる。Windows 専用になり、COM の扱いが要る | 4GiB 超が要るときの候補 |
-| UDF を自前で書く | 4GiB 超のファイルも入る。仕様が ISO9660 より大きい | 今後の候補 |
+| Windows の IMAPI2（`IFileSystemImage`） | Windows 標準の API で UDF も作れる。PowerShell から呼ぶ ps1 にまとめ、exe はそれを呼ぶ | **Windows で採用** |
+| UDF を自前で書く | 4GiB 超のファイルも入る。仕様が ISO9660 より大きい | Linux で要るようになったら |
+
+ps1 を exe に埋め込まず別のファイルにしているのは、exe が一時フォルダにスクリプトを書き出して実行する動きが、ウイルス対策ソフトに怪しまれやすいためです。
 
 Windows 固有の注意点として、次に対応しています。
 

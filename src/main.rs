@@ -11,6 +11,7 @@ mod about;
 mod fonts;
 #[cfg(feature = "gui")]
 mod gui;
+mod imapi;
 mod iso;
 
 use clap::Parser;
@@ -38,6 +39,9 @@ struct Args {
     /// 隠しファイル・フォルダ(Windows の隠し属性か、名前が "." で始まるもの)を入れない
     #[arg(long)]
     exclude_hidden: bool,
+    /// 焼く予定のメディア。入りきらなければ作る前に止める
+    #[arg(long, value_enum, default_value_t = iso::Media::Unlimited)]
+    media: iso::Media,
     /// 画面を開く(元のフォルダを指定すると、それを入れた状態で開く)
     #[arg(long)]
     gui: bool,
@@ -85,6 +89,15 @@ fn open_gui(_args: Args) {
     std::process::exit(2);
 }
 
+/// ISO を作る。Windows では IMAPI2 (同じフォルダの folder2DVD_ISO.ps1)、ほかでは自前の書き出し。
+pub fn build(opts: &iso::Options, progress: &iso::Progress) -> Result<iso::Report, String> {
+    if cfg!(windows) {
+        imapi::create(opts, progress)
+    } else {
+        iso::create(opts, progress)
+    }
+}
+
 fn run_cli(args: Args) -> Result<(), String> {
     let source = args.source.expect("source is checked by main");
     let output = args.output.unwrap_or_else(|| iso::default_output(&source));
@@ -94,6 +107,7 @@ fn run_cli(args: Args) -> Result<(), String> {
         label: args.label.unwrap_or_default(),
         overwrite: args.force,
         exclude_hidden: args.exclude_hidden,
+        media: args.media,
     };
     let progress = Arc::new(iso::Progress::default());
     let started = Instant::now();
@@ -113,7 +127,7 @@ fn run_cli(args: Args) -> Result<(), String> {
             std::thread::sleep(Duration::from_millis(200));
         }
     });
-    let result = iso::create(&opts, &progress);
+    let result = build(&opts, &progress);
     // 進み具合の表示を止める合図に使う。書き出しはもう終わっているので中断にはならない
     progress.cancel.store(true, Ordering::Relaxed);
     let _ = ticker.join();

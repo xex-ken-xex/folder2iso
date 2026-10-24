@@ -4,14 +4,8 @@
 ISO を作る処理は、Windows に標準で入っている **IMAPI2**（Image Mastering API v2、`imapi2fs.dll`）に任せています。
 そのため、ソフトを追加で入れなくても使えます。
 
-本体の `folder2iso.exe`（Rust 製）との違いは次のとおりです。
-
-| | folder2DVD_ISO.ps1 | folder2iso.exe |
-| --- | --- | --- |
-| 動く OS | Windows だけ | Windows / Linux |
-| 4GiB 以上のファイル | **入れられる**（UDF） | 入れられない |
-| 画面（GUI） | なし（PowerShell で実行） | あり（vw と同じ見た目） |
-| 準備 | なし（.ps1 を置くだけ） | exe を置くだけ |
+**Windows の `folder2iso.exe` は、このスクリプトを呼んで ISO を作ります。** exe と同じフォルダに置いてください。
+画面がいらないときは、このスクリプトだけを PowerShell から直接使うこともできます。
 
 ---
 
@@ -32,7 +26,7 @@ ISO を作る処理は、Windows に標準で入っている **IMAPI2**（Image 
 - **ISO の中身は圧縮されません。** ISO の大きさは、入れたファイルの合計とほぼ同じになります。
 - 起動できる（ブータブル）ISO は作れません。
 - IMAPI2 は、ファイルを追加する段階（「ファイルを追加しています」）では進み具合を出しません。ファイルが数万個あると、ここでしばらく止まったように見えます。
-- 中身を数えるときは隠しファイルも数えます。ただし、IMAPI2 の `AddTree` が隠しファイルや隠しフォルダも ISO に入れるかは確認できていません。
+- `-ExcludeHidden` を付けないときは、フォルダを IMAPI2 の `AddTree` でまとめて入れます。このとき IMAPI2 が隠しファイルも入れるかは確認できていません。付けたときは、隠していないものだけを 1 つずつ `AddFile` で入れます。
 - ラベルに日本語や記号を使うと、IMAPI2 がエラーにすることがあります。そのときは英数字のラベルを `-Label` で指定してください。
 
 ## 前提条件
@@ -76,7 +70,9 @@ PowerShell を開き、スクリプトのあるフォルダに移動して実行
 | `-Label` | ボリュームラベル | フォルダ名 |
 | `-Media` | 焼く予定のメディア。容量を超えると作る前に止める。CD = 700MB、DVD = 4.7GB、DVD-DL = 8.5GB、BD = 25GB、BD-DL = 50GB、Unlimited = 上限なし | `DVD` |
 | `-FileSystem` | `Auto` = ISO9660 + Joliet + UDF（4GiB 以上のファイルがあれば UDF だけ）／`All` = 常に 3 つ全部／`UDF` = UDF だけ | `Auto` |
+| `-ExcludeHidden` | 隠しファイル・隠しフォルダ（隠し属性かシステム属性のもの、名前が `.` で始まるもの）を入れない。リンク・ジャンクションも飛ばす | 入れる |
 | `-Force` | 出力ファイルが既にあれば上書きする | 上書きしない |
+| `-Machine` | folder2iso.exe から呼ぶとき用。1 行ずつ `@@種類 内容`（INFO / WARN / PROGRESS / DONE / ERROR）を UTF-8 で出す。手で使うときは要らない | |
 
 詳しいヘルプは `Get-Help .\folder2DVD_ISO.ps1 -Detailed` で見られます。
 
@@ -138,5 +134,5 @@ for /d %%D in ("D:\archive\*") do (
 
 1. `IMAPI2FS.MsftFileSystemImage`（COM）を作る
 2. `ChooseImageDefaultsForMediaType` でメディアに合わせた既定を入れ、`FileSystemsToCreate` で形式、`VolumeName` でラベルを決める（`Unlimited` のときは `FreeMediaBlocks = 0` で上限をなくす）
-3. `Root.AddTree(フォルダ, $false)` でフォルダの中身を追加する
+3. `Root.AddTree(フォルダ, $false)` でフォルダの中身を追加する（`-ExcludeHidden` のときは、隠していないものを `AddDirectory` / `AddFile` で 1 つずつ）
 4. `CreateResultImage()` で結果を受け取り、`ImageStream`（COM の `IStream`）を、スクリプトの中の小さな C# のクラスで少しずつファイルに写す

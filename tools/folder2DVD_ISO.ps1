@@ -6,6 +6,7 @@
     指定したフォルダの中身をまるごと入れた .iso ファイルを作る。
     Windows に標準で入っている IMAPI2（imapi2fs.dll）にイメージを作らせるので、追加のソフトは要らない。
     UDF に対応しているので、4GiB 以上のファイルも入れられる（そのときは自動で UDF だけで作る）。
+    folder2iso.exe も、Windows ではこのスクリプトを呼んで ISO を作る。
 
     詳しくは同じフォルダの README.md を参照。
 
@@ -27,8 +28,14 @@
     All: ISO9660 + Joliet + UDF（4GiB 以上のファイルがあると失敗する）
     UDF: UDF だけ
 
+.PARAMETER ExcludeHidden
+    隠しファイル・隠しフォルダ（隠し属性かシステム属性のもの、名前が "." で始まるもの）を入れない。
+
 .PARAMETER Force
     出力ファイルが既にあれば上書きする。
+
+.PARAMETER Machine
+    folder2iso.exe から呼ぶときの出力にする（1 行ずつ "@@種類 内容" を UTF-8 で出す）。手で使うときは要らない。
 
 .EXAMPLE
     .\folder2DVD_ISO.ps1 "D:\写真\2024"
@@ -52,11 +59,40 @@ param(
     [ValidateSet('Auto', 'All', 'UDF')]
     [string]$FileSystem = 'Auto',
 
-    [switch]$Force
+    [switch]$ExcludeHidden,
+
+    [switch]$Force,
+
+    [switch]$Machine
 )
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
+
+if ($Machine) {
+    # 呼び出し元（folder2iso.exe）は UTF-8 で読む。既定のままだとコンソールのコードページ（日本語なら CP932）で出る
+    [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+}
+
+# 人には色付きの文で、folder2iso.exe には "@@種類 内容" の 1 行で伝える。
+# 種類: INFO（経過）/ WARN（警告）/ PROGRESS（書いた量 全体の量）/ DONE（できた大きさ）/ ERROR
+function Say([string]$Message, [string]$Kind = 'INFO') {
+    if ($Machine) {
+        [Console]::Out.WriteLine("@@$Kind $Message")
+        return
+    }
+    switch ($Kind) {
+        'WARN' { Write-Host $Message -ForegroundColor Yellow }
+        'DONE' { Write-Host $Message -ForegroundColor Green }
+        'ERROR' { Write-Host ("エラー: " + $Message) -ForegroundColor Red }
+        default { Write-Host $Message }
+    }
+}
+
+function Fail([string]$Message) {
+    Say $Message 'ERROR'
+    exit 1
+}
 
 # IMAPI2 の定数（imapi2fs.h の FsiFileSystems と imapi2.h の IMAPI_MEDIA_PHYSICAL_TYPE）
 $FsiIso9660 = 1
@@ -80,15 +116,17 @@ function Format-Size([long]$Bytes) {
 }
 
 # IMAPI2 が返すイメージは COM の IStream で、PowerShell からは直接読めないので、C# で少しずつファイルへ写す。
+# 隠しファイルを除くときは AddTree が使えず 1 つずつ AddFile するので、ファイルを IStream で開くのも C# で行う。
 # C# 5 の書き方に留めるのは、Windows PowerShell 5.1 の Add-Type が古いコンパイラで動くため。
-if (-not ('Folder2Iso.StreamWriter' -as [type])) {
+# 名前空間に版を入れるのは、同じ PowerShell の中で古い版の型が読み込み済みだと Add-Type が失敗するため。
+if (-not ('Folder2IsoV2.StreamWriter' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
 
-namespace Folder2Iso {
+namespace Folder2IsoV2 {
     public sealed class StreamWriter : IDisposable {
         private readonly IStream source;
         private readonly FileStream target;
@@ -122,16 +160,40 @@ namespace Folder2Iso {
             Marshal.ReleaseComObject(source);
         }
     }
+
+    public static class Files {
+        [DllImport("shlwapi.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+        private static extern void SHCreateStreamOnFileEx(string file, uint mode, uint attributes,
+            bool create, IStream template, out IStream stream);
+
+        // 読むだけの IStream で開く（STGM_READ | STGM_SHARE_DENY_WRITE）。中身はメモリに読み込まない。
+        public static object OpenRead(string path) {
+            IStream stream;
+            SHCreateStreamOnFileEx(path, 0x00000020, 0, false, null, out stream);
+            return stream;
+        }
+    }
 }
 '@
+}
+
+# 隠しファイルを除いた中身を、親フォルダが子より先に来る順で返す。
+# Get-ChildItem を -Force なしで呼ぶと、隠し属性とシステム属性のものは返らない。
+# リンク・ジャンクションをたどらないのは、ループしていると終わらないため。
+function Get-VisibleItems([string]$Path) {
+    foreach ($item in @(Get-ChildItem -LiteralPath $Path -ErrorAction SilentlyContinue)) {
+        if ($item.Name.StartsWith('.')) { continue }
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+        $item
+        if ($item.PSIsContainer) { Get-VisibleItems $item.FullName }
+    }
 }
 
 # ---- 入力の確認 ----
 
 $srcItem = Get-Item -LiteralPath $Source -ErrorAction SilentlyContinue
 if ($null -eq $srcItem -or -not $srcItem.PSIsContainer) {
-    Write-Error "フォルダが見つかりません: $Source"
-    exit 1
+    Fail "フォルダが見つかりません: $Source"
 }
 $srcPath = $srcItem.FullName.TrimEnd('\')
 $folderName = $srcItem.Name.TrimEnd('\', ':')
@@ -146,26 +208,30 @@ $outPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPa
 if ([string]::IsNullOrWhiteSpace($Label)) { $Label = $folderName }
 
 if ((Test-Path -LiteralPath $outPath) -and -not $Force) {
-    Write-Error "出力ファイルが既にあります（上書きするなら -Force）: $outPath"
-    exit 1
+    Fail "出力ファイルが既にあります（上書きするなら -Force）: $outPath"
 }
 # 出力先が元のフォルダの中だと、作った ISO を自分の中に取り込んでしまう
 if ($outPath.StartsWith($srcPath + '\', [StringComparison]::OrdinalIgnoreCase)) {
-    Write-Error "出力先を元のフォルダの中にはできません: $outPath"
-    exit 1
+    Fail "出力先を元のフォルダの中にはできません: $outPath"
 }
 
-Write-Host "元のフォルダ : $srcPath"
-Write-Host "出力ファイル : $outPath"
-Write-Host "中身を数えています..."
-$files = @(Get-ChildItem -LiteralPath $srcPath -Recurse -Force -File -ErrorAction SilentlyContinue)
+Say "元のフォルダ : $srcPath"
+Say "出力ファイル : $outPath"
+Say "中身を数えています..."
+if ($ExcludeHidden) {
+    $visible = @(Get-VisibleItems $srcPath)
+    $files = @($visible | Where-Object { -not $_.PSIsContainer })
+}
+else {
+    $files = @(Get-ChildItem -LiteralPath $srcPath -Recurse -Force -File -ErrorAction SilentlyContinue)
+}
 $totalBytes = [long]0
 $bigFiles = @()
 foreach ($f in $files) {
     $totalBytes += $f.Length
     if ($f.Length -ge $FourGiB) { $bigFiles += $f }
 }
-Write-Host ("中身         : {0} ファイル、{1}" -f $files.Count, (Format-Size $totalBytes))
+Say ("中身         : {0} ファイル、{1}" -f $files.Count, (Format-Size $totalBytes))
 
 $fs = $FsiIso9660 -bor $FsiJoliet -bor $FsiUdf
 switch ($FileSystem) {
@@ -173,13 +239,12 @@ switch ($FileSystem) {
     'Auto' {
         if ($bigFiles.Count -gt 0) {
             $fs = $FsiUdf
-            Write-Host ("4GiB 以上のファイルが {0} 個あるので、UDF だけで作ります（Windows 10/11 では問題なく開けます）" -f $bigFiles.Count) -ForegroundColor Yellow
+            Say ("4GiB 以上のファイルが {0} 個あるので、UDF だけで作ります（Windows 10/11 では問題なく開けます）" -f $bigFiles.Count) 'WARN'
         }
     }
     'All' {
         if ($bigFiles.Count -gt 0) {
-            Write-Error ("4GiB 以上のファイルは ISO9660/Joliet に入りません。-FileSystem Auto か UDF にしてください:`n  " + (($bigFiles | ForEach-Object { $_.FullName }) -join "`n  "))
-            exit 1
+            Fail ("4GiB 以上のファイルは ISO9660/Joliet に入りません。-FileSystem Auto か UDF にしてください: " + (($bigFiles | ForEach-Object { $_.FullName }) -join ', '))
         }
     }
 }
@@ -187,7 +252,7 @@ $fsNames = @()
 if ($fs -band $FsiIso9660) { $fsNames += 'ISO9660' }
 if ($fs -band $FsiJoliet) { $fsNames += 'Joliet' }
 if ($fs -band $FsiUdf) { $fsNames += 'UDF' }
-Write-Host ("形式         : {0}、メディア: {1}、ラベル: {2}" -f ($fsNames -join ' + '), $Media, $Label)
+Say ("形式         : {0}、メディア: {1}、ラベル: {2}" -f ($fsNames -join ' + '), $Media, $Label)
 
 # ---- イメージを作る ----
 
@@ -205,24 +270,42 @@ try {
 
     $capacity = [long]$image.FreeMediaBlocks * 2048
     if ($capacity -gt 0 -and $totalBytes -gt $capacity) {
-        throw ("{0} に入りきりません（中身 {1}、容量 {2}）。-Media を大きいものか Unlimited にしてください" -f $Media, (Format-Size $totalBytes), (Format-Size $capacity))
+        throw ("{0} に入りきりません（中身 {1}、容量 {2}）。メディアを大きいものか「上限なし」(Unlimited) にしてください" -f $Media, (Format-Size $totalBytes), (Format-Size $capacity))
     }
 
-    Write-Host "ファイルを追加しています（ファイルが多いと時間がかかります）..."
-    # 第 2 引数 $false: フォルダそのものではなく、中身を ISO の直下に入れる
-    $image.Root.AddTree($srcPath, $false)
+    Say "ファイルを追加しています（ファイルが多いと時間がかかります）..."
+    if ($ExcludeHidden) {
+        foreach ($item in $visible) {
+            $rel = $item.FullName.Substring($srcPath.Length + 1)
+            if ($item.PSIsContainer) {
+                $image.Root.AddDirectory($rel)
+            }
+            else {
+                $image.Root.AddFile($rel, [Folder2IsoV2.Files]::OpenRead($item.FullName))
+            }
+        }
+    }
+    else {
+        # 第 2 引数 $false: フォルダそのものではなく、中身を ISO の直下に入れる
+        $image.Root.AddTree($srcPath, $false)
+    }
 
-    Write-Host "イメージを組み立てています..."
+    Say "イメージを組み立てています..."
     $result = $image.CreateResultImage()
     $imageBytes = [long]$result.TotalBlocks * [long]$result.BlockSize
 
-    $writer = New-Object Folder2Iso.StreamWriter -ArgumentList $result.ImageStream, $outPath, ([bool]$Force)
+    Say "書き出しています..."
+    $writer = New-Object Folder2IsoV2.StreamWriter -ArgumentList $result.ImageStream, $outPath, ([bool]$Force)
     $written = [long]0
     $started = Get-Date
     while ($true) {
         $n = $writer.Step(64MB)
         if ($n -le 0) { break }
         $written += $n
+        if ($Machine) {
+            Say "$written $imageBytes" 'PROGRESS'
+            continue
+        }
         # [Math]::Max(1, ...) だと int 版が選ばれ、2GB を超える大きさで変換に失敗するので long でそろえる
         $pct = [int][Math]::Min([double]100, $written * 100.0 / [Math]::Max([long]1, $imageBytes))
         $secs = ((Get-Date) - $started).TotalSeconds
@@ -230,20 +313,28 @@ try {
         if ($secs -gt 1) { $status += ('  {0}/秒' -f (Format-Size ([long]($written / $secs)))) }
         Write-Progress -Activity 'ISO を書き出しています' -Status $status -PercentComplete $pct
     }
-    Write-Progress -Activity 'ISO を書き出しています' -Completed
+    if (-not $Machine) { Write-Progress -Activity 'ISO を書き出しています' -Completed }
+    $writer.Dispose()
+    $writer = $null
     $completed = $true
-    Write-Host ("作成しました : {0}（{1}、{2:N1} 秒）" -f $outPath, (Format-Size $written), ((Get-Date) - $started).TotalSeconds) -ForegroundColor Green
+    if ($Machine) {
+        Say "$written" 'DONE'
+    }
+    else {
+        Say ("作成しました : {0}（{1}、{2:N1} 秒）" -f $outPath, (Format-Size $written), ((Get-Date) - $started).TotalSeconds) 'DONE'
+    }
 }
 catch {
-    Write-Host ("エラー: " + $_.Exception.Message) -ForegroundColor Red
+    Say $_.Exception.Message 'ERROR'
 }
 finally {
+    $wroteSomething = $null -ne $writer
     if ($null -ne $writer) { $writer.Dispose() }
     if ($null -ne $image) { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($image) }
     # 失敗・中断（Ctrl+C）で残った書きかけのファイルは消す
-    if (-not $completed -and $null -ne $writer -and (Test-Path -LiteralPath $outPath)) {
+    if (-not $completed -and $wroteSomething -and (Test-Path -LiteralPath $outPath)) {
         Remove-Item -LiteralPath $outPath -Force
-        Write-Host "書きかけのファイルを消しました: $outPath"
+        Say "書きかけのファイルを消しました: $outPath"
     }
 }
 if (-not $completed) { exit 1 }

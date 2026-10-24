@@ -27,9 +27,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --release
+      # exe は同じフォルダの ps1 を呼んで ISO を作るので、同じフォルダに並べて入れる
+      - shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item target/release/folder2iso.exe, tools/folder2DVD_ISO.ps1, README.md dist/
+          Copy-Item tools/README.md dist/folder2DVD_ISO_README.md
       - uses: actions/upload-artifact@v4
         with:
           name: folder2iso-windows-x64
-          path: |
-            target/release/folder2iso.exe
-            README.md
+          path: dist/

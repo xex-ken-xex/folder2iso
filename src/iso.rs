@@ -17,6 +17,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const SECTOR: usize = 2048;
@@ -34,6 +35,66 @@ pub struct Options {
     pub label: String,
     pub overwrite: bool,
     pub exclude_hidden: bool,
+    pub media: Media,
+}
+
+/// 焼く予定のメディア。入りきらなければ作る前に止める。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum Media {
+    Cd,
+    Dvd,
+    DvdDl,
+    Bd,
+    BdDl,
+    /// 上限なし（焼かずにファイルとして使う）
+    #[default]
+    Unlimited,
+}
+
+impl Media {
+    pub const ALL: [Media; 6] = [
+        Media::Unlimited,
+        Media::Cd,
+        Media::Dvd,
+        Media::DvdDl,
+        Media::Bd,
+        Media::BdDl,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Media::Cd => "CD (700MB)",
+            Media::Dvd => "DVD (4.7GB)",
+            Media::DvdDl => "DVD 2 層 (8.5GB)",
+            Media::Bd => "BD (25GB)",
+            Media::BdDl => "BD 2 層 (50GB)",
+            Media::Unlimited => "上限なし",
+        }
+    }
+
+    /// folder2DVD_ISO.ps1 の -Media に渡す値
+    pub fn script_arg(self) -> &'static str {
+        match self {
+            Media::Cd => "CD",
+            Media::Dvd => "DVD",
+            Media::DvdDl => "DVD-DL",
+            Media::Bd => "BD",
+            Media::BdDl => "BD-DL",
+            Media::Unlimited => "Unlimited",
+        }
+    }
+
+    /// 入る量（2048 バイトのセクタ数）。IMAPI2 の ChooseImageDefaultsForMediaType と同じ値にそろえる。
+    pub fn capacity_sectors(self) -> Option<u64> {
+        match self {
+            Media::Cd => Some(360_000),
+            Media::Dvd => Some(2_295_104),
+            Media::DvdDl => Some(4_173_824),
+            Media::Bd => Some(12_219_392),
+            Media::BdDl => Some(24_438_784),
+            Media::Unlimited => None,
+        }
+    }
 }
 
 /// 書き出しの進み具合。別のスレッドから読み、中断を伝える。
@@ -42,6 +103,20 @@ pub struct Progress {
     pub done: AtomicU64,
     pub total: AtomicU64,
     pub cancel: AtomicBool,
+    /// いま何をしているか（書き出しが始まる前の段階を画面に出す）
+    pub stage: Mutex<String>,
+}
+
+impl Progress {
+    pub fn set_stage(&self, text: &str) {
+        if let Ok(mut s) = self.stage.lock() {
+            *s = text.to_string();
+        }
+    }
+
+    pub fn stage(&self) -> String {
+        self.stage.lock().map(|s| s.clone()).unwrap_or_default()
+    }
 }
 
 /// 入れるものの数と大きさ。
@@ -122,6 +197,16 @@ pub fn create(opts: &Options, progress: &Progress) -> Result<Report, String> {
         ));
     }
     let layout = img.layout()?;
+    if let Some(cap) = opts.media.capacity_sectors() {
+        if layout.volume_sectors as u64 > cap {
+            return Err(format!(
+                "{} に入りきりません（イメージ {:.2} GB、容量 {:.2} GB）",
+                opts.media.label(),
+                layout.volume_sectors as f64 * SECTOR as f64 / 1e9,
+                cap as f64 * SECTOR as f64 / 1e9
+            ));
+        }
+    }
     progress.total.store(summary.bytes, Ordering::Relaxed);
     progress.done.store(0, Ordering::Relaxed);
 
@@ -983,6 +1068,7 @@ mod tests {
                 label: "テスト".into(),
                 overwrite: false,
                 exclude_hidden: false,
+                media: Media::Unlimited,
             },
             &Progress::default(),
         )
@@ -1015,6 +1101,7 @@ mod tests {
             label: String::new(),
             overwrite: false,
             exclude_hidden: false,
+            media: Media::Unlimited,
         };
         assert!(create(&opts, &Progress::default()).is_err());
         assert_eq!(fs::read(&out).unwrap(), b"keep");
@@ -1031,6 +1118,7 @@ mod tests {
             label: String::new(),
             overwrite: false,
             exclude_hidden: false,
+            media: Media::Unlimited,
         };
         assert!(create(&opts, &Progress::default()).is_err());
         assert!(!src.join("x.iso").exists());
@@ -1049,9 +1137,34 @@ mod tests {
             label: String::new(),
             overwrite: false,
             exclude_hidden: false,
+            media: Media::Unlimited,
         };
         assert!(create(&opts, &progress).unwrap_err().contains("中断"));
         assert!(!out.exists());
+    }
+
+    #[test]
+    fn refuses_an_image_larger_than_the_chosen_media() {
+        let src = temp_dir("src5");
+        // 中身を書かずに大きさだけ決める（容量の判定は書き始める前なので、中身は読まれない）
+        File::create(src.join("a.bin"))
+            .unwrap()
+            .set_len(800_000_000)
+            .unwrap();
+        let out = temp_dir("out5").join("t.iso");
+        let opts = Options {
+            source: src.clone(),
+            output: out.clone(),
+            label: String::new(),
+            overwrite: false,
+            exclude_hidden: false,
+            media: Media::Cd,
+        };
+        assert!(create(&opts, &Progress::default())
+            .unwrap_err()
+            .contains("入りきりません"));
+        assert!(!out.exists());
+        let _ = fs::remove_dir_all(&src);
     }
 
     #[test]

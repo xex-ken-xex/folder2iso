@@ -59,6 +59,7 @@ struct App {
     label: String,
     exclude_hidden: bool,
     overwrite: bool,
+    media: iso::Media,
     theme: ThemePreference,
 
     /// 数えた元のフォルダと、その結果
@@ -84,6 +85,7 @@ impl App {
             label: String::new(),
             exclude_hidden: false,
             overwrite: false,
+            media: iso::Media::default(),
             theme,
             summary: None,
             scan: None,
@@ -181,9 +183,16 @@ impl App {
                 "出力ファイルが既にあります（上書きするなら「既にあれば上書きする」）".into(),
             );
         }
+        if cfg!(windows) && crate::imapi::script_path().is_none() {
+            return Some(format!(
+                "{} が見つかりません。folder2iso.exe と同じフォルダに置いてください",
+                crate::imapi::SCRIPT_NAME
+            ));
+        }
         match self.current_summary() {
             Some(Err(e)) => Some(e.clone()),
-            Some(Ok(s)) if !s.too_big.is_empty() => Some(format!(
+            // Windows は IMAPI2 が UDF で入れるので止めない
+            Some(Ok(s)) if !cfg!(windows) && !s.too_big.is_empty() => Some(format!(
                 "4GiB 以上のファイルが {} 個あり、ISO9660/Joliet には入れられません",
                 s.too_big.len()
             )),
@@ -201,6 +210,7 @@ impl App {
             label: self.label.clone(),
             overwrite: self.overwrite,
             exclude_hidden: self.exclude_hidden,
+            media: self.media,
         };
         self.note(format!(
             "作成を始めた: {} → {}",
@@ -212,7 +222,7 @@ impl App {
         let (p, ctx) = (Arc::clone(&progress), ctx.clone());
         let output = opts.output.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(iso::create(&opts, &p));
+            let _ = tx.send(crate::build(&opts, &p));
             ctx.request_repaint();
         });
         self.job = Some(Job {
@@ -338,7 +348,13 @@ impl App {
                         size_text(total)
                     )));
                     let secs = j.started.elapsed().as_secs_f64();
-                    if done > 0 && secs > 0.5 {
+                    if done == 0 {
+                        // 書き出しの前(数える・IMAPI2 がファイルを集める)は量が出ないので、段階を出す
+                        let stage = j.progress.stage();
+                        if !stage.is_empty() {
+                            ui.weak(format!("{stage}…"));
+                        }
+                    } else if secs > 0.5 {
                         let rate = done as f64 / secs;
                         let left = total.saturating_sub(done) as f64 / rate;
                         ui.weak(format!("{}/秒、残り {left:.0} 秒", size_text(rate as u64)));
@@ -471,13 +487,30 @@ impl App {
                 )
                 .on_hover_text("エクスプローラでドライブ名の横に出る名前。空ならフォルダ名");
             });
+            ui.horizontal(|ui| {
+                ui.label("メディア");
+                vw_ui::menu::combo("media")
+                    .selected_text(self.media.label())
+                    .show_ui(ui, |ui| {
+                        for m in iso::Media::ALL {
+                            ui.selectable_value(&mut self.media, m, m.label());
+                        }
+                    });
+            })
+            .response
+            .on_hover_text(
+                "焼く予定のメディア。入りきらなければ作る前に止める。焼かないなら「上限なし」",
+            );
             ui.checkbox(&mut self.exclude_hidden, "隠しファイル・フォルダを入れない")
                 .on_hover_text("Windows の隠し属性のもの、名前が \".\" で始まるもの");
             ui.add_space(6.0);
-            ui.weak(
+            ui.weak(if cfg!(windows) {
+                "形式: ISO9660 + Joliet + UDF（Windows 標準の IMAPI2 で作る）。\
+                 4GiB 以上のファイルがあれば UDF だけで作ります。"
+            } else {
                 "形式: ISO9660 + Joliet（日本語・長い名前は 64 文字まで）。\
-                 4GiB 以上のファイルは入れられません。",
-            );
+                 4GiB 以上のファイルは入れられません。"
+            });
         });
     }
 
@@ -494,8 +527,9 @@ impl App {
         }
         match self.current_summary() {
             Some(Ok(s)) => {
+                let blocked = !cfg!(windows) && !s.too_big.is_empty();
                 ui.colored_label(
-                    if s.too_big.is_empty() { OK } else { WARN },
+                    if blocked { WARN } else { OK },
                     format!(
                         "{} ファイル、{} フォルダ、{}",
                         s.files,
@@ -503,8 +537,15 @@ impl App {
                         size_text(s.bytes)
                     ),
                 );
-                for p in s.too_big.iter().take(5) {
-                    ui.colored_label(WARN, format!("4GiB 以上: {}", p.display()));
+                if blocked {
+                    for p in s.too_big.iter().take(5) {
+                        ui.colored_label(WARN, format!("4GiB 以上: {}", p.display()));
+                    }
+                } else if !s.too_big.is_empty() {
+                    ui.weak(format!(
+                        "4GiB 以上のファイルが {} 個あるので、UDF だけで作ります",
+                        s.too_big.len()
+                    ));
                 }
             }
             Some(Err(e)) => {
