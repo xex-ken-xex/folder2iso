@@ -223,7 +223,8 @@ try {
         $n = $writer.Step(64MB)
         if ($n -le 0) { break }
         $written += $n
-        $pct = [int][Math]::Min(100, $written * 100 / [Math]::Max(1, $imageBytes))
+        # [Math]::Max(1, ...) だと int 版が選ばれ、2GB を超える大きさで変換に失敗するので long でそろえる
+        $pct = [int][Math]::Min([double]100, $written * 100.0 / [Math]::Max([long]1, $imageBytes))
         $secs = ((Get-Date) - $started).TotalSeconds
         $status = '{0} / {1}' -f (Format-Size $written), (Format-Size $imageBytes)
         if ($secs -gt 1) { $status += ('  {0}/秒' -f (Format-Size ([long]($written / $secs)))) }
