@@ -962,7 +962,12 @@ fn fill_field(buf: &mut [u8], s: &str, t: Tree) {
                 *b = if i % 2 == 0 { 0x00 } else { 0x20 };
             }
             let units = truncate_utf16(s, buf.len() / 2);
-            for (pair, u) in buf.chunks_exact_mut(2).zip(units.encode_utf16()) {
+            for (pair, u) in buf
+                .as_chunks_mut::<2>()
+                .0
+                .iter_mut()
+                .zip(units.encode_utf16())
+            {
                 pair.copy_from_slice(&u.to_be_bytes());
             }
         }
